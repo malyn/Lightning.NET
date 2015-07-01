@@ -145,7 +145,7 @@ namespace LightningDB.Tests
         }
 
         [Test]
-        public void CanGetUsedSize()
+        public void CanCalculateDatabaseUtilization()
         {
             const int entriesCount = 1;
 
@@ -153,7 +153,7 @@ namespace LightningDB.Tests
             _env = new LightningEnvironment(_path, EnvironmentOpenFlags.None);
             _env.Open();
 
-            var initialUsedSize = _env.UsedSize;
+            var initialUtilization = _env.CalculateDatabaseUtilization();
 
             using (var txn = _env.BeginTransaction())
             using (var db = txn.OpenDatabase(null, new DatabaseOptions { Flags = DatabaseOpenFlags.None }))
@@ -165,10 +165,47 @@ namespace LightningDB.Tests
             }
 
             //act
-            var sizeDelta = _env.UsedSize - initialUsedSize;
+            var sizeDelta = _env.CalculateDatabaseUtilization() - initialUtilization;
 
             //act-assert;
             Assert.AreEqual(_env.PageSize, sizeDelta);
+        }
+
+        [Test]
+        public void DatabaseUtilizationShouldAccountForFreePages()
+        {
+            const int entriesCount = 1;
+
+            //arrange
+            _env = new LightningEnvironment(_path, EnvironmentOpenFlags.None);
+            _env.Open();
+
+            using (var txn = _env.BeginTransaction())
+            using (var db = txn.OpenDatabase(null, new DatabaseOptions { Flags = DatabaseOpenFlags.None }))
+            {
+                for (int i = 0; i < entriesCount; i++)
+                    txn.Put(db, i, i);
+
+                txn.Commit();
+            }
+
+            var preDeleteUtilization = _env.CalculateDatabaseUtilization();
+
+            using (var txn = _env.BeginTransaction())
+            using (var db = txn.OpenDatabase(null, new DatabaseOptions { Flags = DatabaseOpenFlags.None }))
+            {
+                for (int i = 0; i < entriesCount; i++)
+                    txn.Delete(db, i, i);
+
+                txn.Commit();
+            }
+
+            //act
+            //<= because the free page list takes up space
+            bool sizeDecreasedAfterDelete = _env.CalculateDatabaseUtilization() <= preDeleteUtilization;
+
+            //act-assert
+            Assert.IsTrue(sizeDecreasedAfterDelete);
         }
 
     }

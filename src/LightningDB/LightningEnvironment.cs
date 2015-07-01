@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
 using LightningDB.Converters;
 using LightningDB.Factories;
@@ -113,14 +114,14 @@ namespace LightningDB
 
         public uint PageSize { get { return GetStat().ms_psize; } }
 
-        public long UsedSize
+        public long LastPageNumber
         {
             get
             {
                 var envInfo = new MDBEnvInfo();
                 NativeMethods.Execute(lib => lib.mdb_env_info(_handle, out envInfo));
 
-                return envInfo.me_last_pgno.ToInt64() * PageSize;
+                return envInfo.me_last_pgno.ToInt64() + 1;
             }
         }
 
@@ -311,6 +312,39 @@ namespace LightningDB
         public void Flush(bool force)
         {
             NativeMethods.Execute(lib => lib.mdb_env_sync(_handle, force));
+        }
+
+        /// <summary>
+        /// Calculates the total database utilization, taking into
+        /// account the number of free pages available throughout the
+        /// database.
+        /// </summary>
+        /// <returns>
+        /// Database utilization in bytes.
+        /// </returns>
+        public ulong CalculateDatabaseUtilization()
+        {
+            // Get the number of free pages from the free page list.
+            long freePages = 0;
+            using (var txn = this.BeginTransaction(TransactionBeginFlags.ReadOnly))
+            {
+                var cursorHandle = default(IntPtr);
+                NativeMethods.Execute(lib => lib.mdb_cursor_open(txn._handle, 0, out cursorHandle));
+
+                var keyStruct = new ValueStructure();
+                var valueStruct = new ValueStructure();
+                while (NativeMethods.Read(lib => lib.mdb_cursor_get(cursorHandle, ref keyStruct, ref valueStruct, CursorOperation.Next)) == 0)
+                {
+                    IntPtr freeListData = valueStruct.data;
+                    freePages += Marshal.ReadIntPtr(freeListData).ToInt64();
+                }
+
+                NativeMethods.Library.mdb_cursor_close(cursorHandle);
+            }
+
+            // Total database utilization is the last used page number
+            // minus the number of free pages.
+            return (ulong)(LastPageNumber - freePages) * PageSize;
         }
 
         private void EnsureOpened()
